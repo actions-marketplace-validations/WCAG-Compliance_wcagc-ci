@@ -5,7 +5,7 @@ import {executeCli,parseCliEnvironment} from "../src/cli-core.js";
 const completed=(verdict:"PASS"|"FAIL")=>({
  id:"check-1",status:"COMPLETED",verdict,failOn:"NEW_CRITICAL",baselineMissing:false,
  counts:{critical:1,serious:2,moderate:3,minor:4},newCounts:{critical:0,serious:1,moderate:0,minor:0},
- appUrl:"https://app.wcagc.com/ci/checks/check-1"
+ appUrl:"https://wcagc.com/ci/checks/check-1"
 });
 
 function dependencies(verdict:"PASS"|"FAIL"="PASS"){
