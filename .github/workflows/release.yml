@@ -1,0 +1,109 @@
+name: Release
+
+on:
+  workflow_run:
+    workflows: [CI]
+    types: [completed]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: wcagc-ci-release
+  cancel-in-progress: false
+
+jobs:
+  release:
+    if: >-
+      (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main') ||
+      (github.event.workflow_run.event == 'push' &&
+      github.event.workflow_run.conclusion == 'success' &&
+      github.event.workflow_run.head_branch == 'main' &&
+      github.event.workflow_run.head_repository.full_name == github.repository)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+          ref: ${{ github.event.workflow_run.head_sha || github.sha }}
+      - name: Resolve semantic version
+        id: version
+        run: |
+          version="v$(node --print "require('./package.json').version")"
+          if ! printf '%s' "$version" | grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+$'; then
+            echo "::error::package.json version must be strict semver"
+            exit 1
+          fi
+          major="${version%%.*}"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "major=$major" >> "$GITHUB_OUTPUT"
+      - name: Check whether this version is already released
+        id: existing
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          tag_exists=false
+          if git rev-parse --verify "refs/tags/$VERSION" >/dev/null 2>&1; then
+            if ! git diff --quiet "$VERSION" HEAD -- \
+              README.md action.yml dist package.json package-lock.json src templates tsconfig.json; then
+              echo "::error::$VERSION already exists but published files changed; bump package.json version"
+              exit 1
+            fi
+            tag_exists=true
+          fi
+          echo "tag_exists=$tag_exists" >> "$GITHUB_OUTPUT"
+
+          release_error="$(mktemp)"
+          release_exists=false
+          if gh api "repos/${GITHUB_REPOSITORY}/releases/tags/${VERSION}" >/dev/null 2>"$release_error"; then
+            release_exists=true
+            echo "$VERSION is already released and published files are unchanged."
+          elif grep -Fq '(HTTP 404)' "$release_error"; then
+            :
+          else
+            cat "$release_error" >&2
+            echo "::error::Could not determine whether $VERSION is already released"
+            exit 1
+          fi
+          echo "release_exists=$release_exists" >> "$GITHUB_OUTPUT"
+
+          if [ "$release_exists" = true ] && [ "$tag_exists" = false ]; then
+            echo "::error::$VERSION has a GitHub release but its exact tag is missing"
+            exit 1
+          fi
+      - name: Publish immutable exact release
+        if: steps.existing.outputs.release_exists == 'false'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ steps.version.outputs.version }}
+          TAG_EXISTS: ${{ steps.existing.outputs.tag_exists }}
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          if [ "$TAG_EXISTS" = "false" ]; then
+            git tag --annotate "$VERSION" --message "wcagc CI $VERSION"
+            git push origin "$VERSION"
+          fi
+          gh release create "$VERSION" \
+            --verify-tag \
+            --generate-notes \
+            --latest \
+            --title "wcagc CI $VERSION"
+      - name: Point the compatible major tag at the exact release
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+          MAJOR: ${{ steps.version.outputs.major }}
+        run: |
+          exact_commit="$(git rev-list -n 1 "$VERSION")"
+          major_commit="$(git rev-list -n 1 "$MAJOR" 2>/dev/null || true)"
+          if [ "$major_commit" = "$exact_commit" ]; then
+            echo "$MAJOR already points at $VERSION ($exact_commit)."
+            exit 0
+          fi
+
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git tag --force --annotate "$MAJOR" "$exact_commit" --message "wcagc CI $MAJOR"
+          git push --force origin "refs/tags/$MAJOR"
