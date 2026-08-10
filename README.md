@@ -6,7 +6,7 @@ Automated checks cover only part of WCAG and EN 301 549. A passing job is not pr
 
 ## Quickstart
 
-First register the target domain in wcagc and create an organization API key with `scans:read` and `scans:write` scopes. Store it as the repository secret `WCAGC_API_KEY`. Every URL in one invocation must belong to the same registered domain; a check accepts at most 20 URLs.
+First register and verify the target domain in wcagc and create an organization API key with the `ci:check` scope. Store it as the repository secret `WCAGC_API_KEY`. Every URL in one invocation must belong to that verified domain. Free organizations receive 30 checks per month with up to 5 URLs per check; Starter receives 100 checks per month, and paid higher tiers have no monthly CI limit. Non-free checks accept up to 20 URLs.
 
 ```yaml
 name: Accessibility
@@ -22,6 +22,45 @@ jobs:
             https://example.com
             https://example.com/pricing
           fail-on: new-critical
+```
+
+To publish persistent Code scanning results, ask the action to write SARIF and upload it in an
+explicit step. The uploader needs `security-events: write`; keeping that permission outside wcagc-ci
+makes the repository's security boundary visible.
+
+```yaml
+permissions:
+  contents: read
+  security-events: write
+
+steps:
+  - uses: WCAG-Compliance/wcagc-ci@v1
+    with:
+      api-key: ${{ secrets.WCAGC_API_KEY }}
+      urls: https://example.com
+      sarif-file: results/wcagc.sarif
+  - uses: github/codeql-action/upload-sarif@v3
+    if: always()
+    with:
+      sarif_file: results/wcagc.sarif
+```
+
+PR comments are opt-in. The action keeps one marker comment and updates it on later runs. A missing
+token, read-only permission, non-PR run, or fork pull request produces a skip note in the step summary
+and never changes the check's exit code.
+
+```yaml
+permissions:
+  contents: read
+  pull-requests: write
+
+steps:
+  - uses: WCAG-Compliance/wcagc-ci@v1
+    with:
+      api-key: ${{ secrets.WCAGC_API_KEY }}
+      urls: https://preview.example.com
+      comment: "true"
+      github-token: ${{ github.token }}
 ```
 
 Create or refresh the comparison baseline only from the default branch:
@@ -44,7 +83,7 @@ jobs:
 
 `fail-on` accepts `new-critical` (default), `any-critical`, `serious-or-worse`, and `none`. When `new-critical` has no prior baseline, it deliberately falls back to `any-critical` and says so in the step summary.
 
-The action emits URL-level workflow annotations, a Markdown step summary with the coverage limitation, and outputs for verdict, check ID, severity counts, new critical count, and report URL. It exits with code 1 on a FAIL verdict, API error, or wait timeout. The API key is masked and never logged.
+The action emits URL-level workflow annotations, an optional SARIF 2.1.0 file with stable finding fingerprints, an optional updatable PR comment, a Markdown step summary with the coverage limitation, and outputs for verdict, check ID, severity counts, new critical count, and report URL. It exits with code 1 on a FAIL verdict, API error, or wait timeout. The API key is masked and never logged.
 
 ## GitLab CI
 

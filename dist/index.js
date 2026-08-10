@@ -1,5 +1,6 @@
 // src/index.ts
-import { appendFile } from "node:fs/promises";
+import { appendFile, mkdir, writeFile } from "node:fs/promises";
+import { dirname } from "node:path";
 
 // src/core.ts
 var coverage = "Automated checks cover only part of WCAG and EN 301 549. Manual review and fixes in code remain essential.";
@@ -56,8 +57,65 @@ function renderAnnotations(findings) {
     return `::${level} title=${escape(`${fresh}${f.impact}: ${f.ruleId}`)}::${escape(`${f.url} \u2014 ${f.failureSummary ?? f.target ?? "Automated finding"}`)}`;
   });
 }
+function toSarif(findings) {
+  const rules = [...new Map(findings.map((f) => [f.ruleId, { id: f.ruleId, name: f.ruleId, shortDescription: { text: `axe-core rule ${f.ruleId}` }, helpUri: f.helpUrl }])).values()];
+  return { $schema: "https://json.schemastore.org/sarif-2.1.0.json", version: "2.1.0", runs: [{ tool: { driver: { name: "wcagc", informationUri: "https://wcagc.com", rules } }, results: findings.map((f) => ({ ruleId: f.ruleId, level: f.impact === "critical" || f.impact === "serious" ? "error" : f.impact === "moderate" ? "warning" : "note", message: { text: `${f.failureSummary ?? "Automated accessibility finding"} Selector: ${f.target}` }, locations: [{ physicalLocation: { artifactLocation: { uri: pagePath(f.url) } } }], partialFingerprints: { wcagcFindingFingerprint: f.fingerprint } })) }] };
+}
+function renderPrComment(result) {
+  const fresh = result.findings.filter((f) => f.isNew);
+  const fixed = result.check.fixedCount ?? 0, unchanged = result.check.unchangedCount ?? result.findings.length - fresh.length;
+  const rows = fresh.slice(0, 5).map((f) => `- \`${f.ruleId}\` \u2014 ${f.url} \u2014 \`${f.target}\``).join("\n");
+  return `<!-- wcagc-check -->
+## wcagc accessibility check
+
+**Verdict: ${result.check.verdict ?? "FAIL"}**
+
+${fresh.length} new findings since baseline \xB7 ${fixed} fixed \xB7 ${unchanged} unchanged
+
+${rows || "No new findings to list."}
+
+[Open the wcagc report](${result.check.appUrl})
+
+> ${coverage}
+`;
+}
+function pagePath(value) {
+  try {
+    const url = new URL(value);
+    return `${url.pathname || "/"}${url.search}`;
+  } catch {
+    return value;
+  }
+}
 function escape(value) {
   return value.replace(/%/g, "%25").replace(/\r/g, "%0D").replace(/\n/g, "%0A").replace(/:/g, "%3A").replace(/,/g, "%2C");
+}
+
+// src/github-comment.ts
+import { readFile } from "node:fs/promises";
+var commentMarker = "<!-- wcagc-check -->";
+async function githubCommentContext(env) {
+  if (!env.GITHUB_REPOSITORY || !env.GITHUB_EVENT_PATH) return null;
+  let event;
+  try {
+    event = JSON.parse(await readFile(env.GITHUB_EVENT_PATH, "utf8"));
+  } catch {
+    return null;
+  }
+  const pullRequest = event.pull_request?.number ?? event.number;
+  if (!pullRequest) return null;
+  const head = event.pull_request?.head?.repo?.full_name;
+  return { repository: env.GITHUB_REPOSITORY, pullRequest, fork: Boolean(head && head !== env.GITHUB_REPOSITORY) };
+}
+async function upsertPrComment(context, token, body, fetcher = fetch) {
+  const base = `https://api.github.com/repos/${context.repository}`;
+  const headers2 = { accept: "application/vnd.github+json", authorization: `Bearer ${token}`, "content-type": "application/json", "x-github-api-version": "2022-11-28" };
+  const list = await fetcher(`${base}/issues/${context.pullRequest}/comments?per_page=100`, { headers: headers2 });
+  if (!list.ok) throw new Error(`GitHub comment lookup returned ${list.status}.`);
+  const existing = (await list.json()).find((comment) => comment.body?.includes(commentMarker));
+  const response = existing ? await fetcher(`${base}/issues/comments/${existing.id}`, { method: "PATCH", headers: headers2, body: JSON.stringify({ body }) }) : await fetcher(`${base}/issues/${context.pullRequest}/comments`, { method: "POST", headers: headers2, body: JSON.stringify({ body }) });
+  if (!response.ok) throw new Error(`GitHub comment write returned ${response.status}.`);
+  return existing ? "updated" : "created";
 }
 
 // src/index.ts
@@ -72,6 +130,10 @@ async function output(name, value) {
 `);
   else console.log(`${name}=${value}`);
 }
+async function summary(value) {
+  if (process.env.GITHUB_STEP_SUMMARY) await appendFile(process.env.GITHUB_STEP_SUMMARY, value.endsWith("\n") ? value : `${value}
+`);
+}
 try {
   const apiKey = input("API-KEY");
   if (!apiKey) throw new Error("api-key is required.");
@@ -80,7 +142,26 @@ try {
   if (!urls.length) throw new Error("urls must contain at least one URL.");
   const result = await runCheck({ apiKey, urls, failOn: failOn(input("FAIL-ON", "new-critical")), setBaseline: bool("SET-BASELINE", false), timeoutMs: Number(input("WAIT-TIMEOUT-SECONDS", "600")) * 1e3, apiBaseUrl: input("API-BASE-URL", "https://api.wcagc.com"), context: { provider: "github", repo: process.env.GITHUB_REPOSITORY, ref: process.env.GITHUB_REF, sha: process.env.GITHUB_SHA, runUrl: process.env.GITHUB_SERVER_URL && process.env.GITHUB_REPOSITORY && process.env.GITHUB_RUN_ID ? `${process.env.GITHUB_SERVER_URL}/${process.env.GITHUB_REPOSITORY}/actions/runs/${process.env.GITHUB_RUN_ID}` : void 0 } }, { fetch, sleep: (ms) => new Promise((r) => setTimeout(r, ms)), now: Date.now });
   if (bool("ANNOTATIONS", true)) for (const line of result.annotations) console.log(line);
-  if (process.env.GITHUB_STEP_SUMMARY) await appendFile(process.env.GITHUB_STEP_SUMMARY, result.summary);
+  await summary(result.summary);
+  const sarifFile = input("SARIF-FILE").trim();
+  if (sarifFile) {
+    await mkdir(dirname(sarifFile), { recursive: true });
+    await writeFile(sarifFile, `${JSON.stringify(toSarif(result.findings), null, 2)}
+`);
+  }
+  if (bool("COMMENT", false)) {
+    const token = input("GITHUB-TOKEN").trim();
+    const context = await githubCommentContext(process.env);
+    if (!token) await summary("PR comment skipped: no GitHub token was provided.");
+    else if (!context) await summary("PR comment skipped: this run is not attached to a pull request.");
+    else if (context.fork) await summary("PR comment skipped: fork pull requests use a read-only token.");
+    else try {
+      const state = await upsertPrComment(context, token, renderPrComment(result));
+      await summary(`PR comment ${state}.`);
+    } catch (error) {
+      await summary(`PR comment skipped: ${error instanceof Error ? error.message : "GitHub did not allow the comment."}`);
+    }
+  }
   const c = result.check.counts, n = result.check.newCounts;
   await output("verdict", result.check.verdict ?? "FAIL");
   await output("check-id", result.check.id);

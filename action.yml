@@ -6,7 +6,7 @@ branding:
   color: green
 inputs:
   api-key:
-    description: Organization API key with scans:read and scans:write scopes.
+    description: Organization API key with the ci:check scope.
     required: true
   urls:
     description: One URL per line. All URLs must be on one registered site.
@@ -26,6 +26,15 @@ inputs:
   annotations:
     description: Emit GitHub workflow annotations for findings.
     default: "true"
+  sarif-file:
+    description: Optional path where SARIF 2.1.0 output is written. Upload it in a separate step.
+    required: false
+  comment:
+    description: Create or update one wcagc pull-request comment.
+    default: "false"
+  github-token:
+    description: Token used only when comment is true.
+    default: ${{ github.token }}
 outputs:
   verdict: { description: PASS or FAIL. }
   check-id: { description: CI check UUID. }
