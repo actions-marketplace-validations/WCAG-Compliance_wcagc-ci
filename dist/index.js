@@ -2,6 +2,12 @@
 import { appendFile, mkdir, writeFile } from "node:fs/promises";
 import { dirname } from "node:path";
 
+// src/published-rules.ts
+var PUBLISHED_RULE_IDS = /* @__PURE__ */ new Set(["color-contrast", "image-alt", "label", "button-name", "link-name", "aria-required-attr", "html-has-lang", "document-title", "meta-viewport", "aria-valid-attr", "aria-allowed-attr", "aria-hidden-focus", "aria-valid-attr-value", "aria-required-children", "aria-roles", "duplicate-id-aria", "nested-interactive", "select-name", "scrollable-region-focusable", "autocomplete-valid"]);
+function publishedRuleUrl(ruleId) {
+  return PUBLISHED_RULE_IDS.has(ruleId) ? `https://wcagc.com/rules/${ruleId}` : void 0;
+}
+
 // src/core.ts
 var coverage = "Automated checks cover only part of WCAG and EN 301 549. Manual review and fixes in code remain essential.";
 function endpoint(base, path) {
@@ -58,13 +64,17 @@ function renderAnnotations(findings) {
   });
 }
 function toSarif(findings) {
-  const rules = [...new Map(findings.map((f) => [f.ruleId, { id: f.ruleId, name: f.ruleId, shortDescription: { text: `axe-core rule ${f.ruleId}` }, helpUri: f.helpUrl }])).values()];
+  const rules = [...new Map(findings.map((f) => [f.ruleId, { id: f.ruleId, name: f.ruleId, shortDescription: { text: `axe-core rule ${f.ruleId}` }, helpUri: publishedRuleUrl(f.ruleId) ?? f.helpUrl }])).values()];
   return { $schema: "https://json.schemastore.org/sarif-2.1.0.json", version: "2.1.0", runs: [{ tool: { driver: { name: "wcagc", informationUri: "https://wcagc.com", rules } }, results: findings.map((f) => ({ ruleId: f.ruleId, level: f.impact === "critical" || f.impact === "serious" ? "error" : f.impact === "moderate" ? "warning" : "note", message: { text: `${f.failureSummary ?? "Automated accessibility finding"} Selector: ${f.target}` }, locations: [{ physicalLocation: { artifactLocation: { uri: pagePath(f.url) } } }], partialFingerprints: { wcagcFindingFingerprint: f.fingerprint } })) }] };
 }
 function renderPrComment(result) {
   const fresh = result.findings.filter((f) => f.isNew);
   const fixed = result.check.fixedCount ?? 0, unchanged = result.check.unchangedCount ?? result.findings.length - fresh.length;
-  const rows = fresh.slice(0, 5).map((f) => `- \`${f.ruleId}\` \u2014 ${f.url} \u2014 \`${f.target}\``).join("\n");
+  const rows = fresh.slice(0, 5).map((f) => {
+    const guide = publishedRuleUrl(f.ruleId);
+    const rule = guide ? `[\`${f.ruleId}\`](${guide})` : `\`${f.ruleId}\``;
+    return `- ${rule} \u2014 ${f.url} \u2014 \`${f.target}\``;
+  }).join("\n");
   return `<!-- wcagc-check -->
 ## wcagc accessibility check
 
