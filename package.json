@@ -1,6 +1,6 @@
 {
   "name": "wcagc-ci",
-  "version": "1.2.0",
+  "version": "1.2.1",
   "private": true,
   "type": "module",
   "repository": {
@@ -29,10 +29,10 @@
     "test": "esbuild test/*.test.ts --bundle --platform=node --target=node24 --format=esm --outdir=.test-dist && node --test .test-dist/*.test.js"
   },
   "devDependencies": {
-    "@types/node": "^24.0.0",
+    "@types/node": "^24.19.2",
     "ajv": "^8.20.0",
     "ajv-draft-04": "^1.0.0",
     "esbuild": "^0.25.0",
-    "typescript": "^5.9.0"
+    "typescript": "^5.9.3"
   }
 }
